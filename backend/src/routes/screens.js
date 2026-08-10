@@ -10,7 +10,7 @@ function register(router) {
   // pre-chunked into the exact QR frame strings it should render.
   router.post('/api/v1/screens/:id/token', async (req, res, params, body) => {
     const { screen_key } = body || {};
-    const screen = db.getScreen(params.id);
+    const screen = await db.getScreen(params.id);
     if (!screen || screen.status !== 'active') {
       return res.json(404, { error: 'SCREEN_NOT_FOUND' });
     }
@@ -18,12 +18,12 @@ function register(router) {
     if (screen.screen_key !== screen_key) {
       return res.json(401, { error: 'INVALID_SCREEN_KEY' });
     }
-    const event = db.getEvent(screen.event_id);
+    const event = await db.getEvent(screen.event_id);
     if (!event || !event.active) {
       return res.json(404, { error: 'EVENT_NOT_FOUND_OR_INACTIVE' });
     }
 
-    db.updateScreen(screen.id, { last_seen: new Date().toISOString() });
+    await db.updateScreen(screen.id, { last_seen: new Date().toISOString() });
 
     const cycle = Math.floor(Date.now() / 1000 / config.tokenValiditySeconds);
     const { token, exp } = signPresenceToken({

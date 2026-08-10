@@ -15,16 +15,25 @@ const { runScanner } = require('../lib/scanner');
 
 let passed = 0;
 let failed = 0;
+const queue = [];
 function test(name, fn) {
-  try {
-    fn();
-    console.log(`  ok - ${name}`);
-    passed++;
-  } catch (err) {
-    console.log(`  FAIL - ${name}`);
-    console.log(`    ${err.message}`);
-    failed++;
+  queue.push([name, fn]);
+}
+
+async function runAll() {
+  for (const [name, fn] of queue) {
+    try {
+      await fn();
+      console.log(`  ok - ${name}`);
+      passed++;
+    } catch (err) {
+      console.log(`  FAIL - ${name}`);
+      console.log(`    ${err.message}`);
+      failed++;
+    }
   }
+  console.log(`\n${passed} passed, ${failed} failed`);
+  process.exit(failed > 0 ? 1 : 0);
 }
 
 console.log('Protocol chunking');
@@ -192,19 +201,19 @@ test('DATA/END before START is ignored, not fatal, until START arrives', () => {
 });
 
 console.log('\nReplay protection (datastore layer)');
-test('same jti cannot be recorded VERIFIED twice', () => {
+test('same jti cannot be recorded VERIFIED twice', async () => {
   process.env.DATABASE_FILE = require('path').join(__dirname, 'tmp-test-db.json');
+  delete process.env.DATABASE_URL;
   delete require.cache[require.resolve('../config')];
   delete require.cache[require.resolve('../db')];
   const db = require('../db');
-  db._reset();
+  await db._reset();
   const jti = 'replay-test-jti';
-  const first = db.insertVerification({ id: 'v1', event_id: 'E', jti, status: 'VERIFIED', verified_at: new Date().toISOString() });
-  const second = db.insertVerification({ id: 'v2', event_id: 'E', jti, status: 'VERIFIED', verified_at: new Date().toISOString() });
+  const first = await db.insertVerification({ id: 'v1', event_id: 'E', jti, status: 'VERIFIED', verified_at: new Date().toISOString() });
+  const second = await db.insertVerification({ id: 'v2', event_id: 'E', jti, status: 'VERIFIED', verified_at: new Date().toISOString() });
   assert.strictEqual(first.conflict, false);
   assert.strictEqual(second.conflict, true);
   require('fs').unlinkSync(process.env.DATABASE_FILE);
 });
 
-console.log(`\n${passed} passed, ${failed} failed`);
-process.exit(failed > 0 ? 1 : 0);
+runAll();

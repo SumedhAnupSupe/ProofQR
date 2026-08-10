@@ -29,17 +29,17 @@ function register(router) {
       active: true,
       created_at: new Date().toISOString(),
     };
-    db.createEvent(event);
+    await db.createEvent(event);
     res.json(201, event);
   });
 
   router.get('/api/v1/events', async (req, res) => {
     if (!requireAdmin(req)) return res.json(401, { error: 'UNAUTHORIZED' });
-    res.json(200, db.listEvents());
+    res.json(200, await db.listEvents());
   });
 
   router.get('/api/v1/events/:id', async (req, res, params) => {
-    const event = db.getEvent(params.id);
+    const event = await db.getEvent(params.id);
     if (!event) return res.json(404, { error: 'EVENT_NOT_FOUND' });
     res.json(200, event);
   });
@@ -47,7 +47,7 @@ function register(router) {
   // Create screen for event -> returns screen_key ONCE (secret, given to the display client)
   router.post('/api/v1/events/:id/screens', async (req, res, params, body) => {
     if (!requireAdmin(req)) return res.json(401, { error: 'UNAUTHORIZED' });
-    const event = db.getEvent(params.id);
+    const event = await db.getEvent(params.id);
     if (!event) return res.json(404, { error: 'EVENT_NOT_FOUND' });
     const screenId = body?.id || `SCREEN_${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
     const screenKey = crypto.randomBytes(24).toString('hex');
@@ -60,27 +60,27 @@ function register(router) {
       created_at: new Date().toISOString(),
       last_seen: null,
     };
-    db.createScreen(screen);
+    await db.createScreen(screen);
     res.json(201, { id: screenId, event_id: event.id, screen_key: screenKey, name: screen.name });
   });
 
   router.get('/api/v1/events/:id/screens', async (req, res, params) => {
     if (!requireAdmin(req)) return res.json(401, { error: 'UNAUTHORIZED' });
-    const rows = db.listScreensForEvent(params.id).map(({ screen_key, ...rest }) => rest);
+    const rows = (await db.listScreensForEvent(params.id)).map(({ screen_key, ...rest }) => rest);
     res.json(200, rows);
   });
 
   router.post('/api/v1/events/:id/screens/:screenId/revoke', async (req, res, params) => {
     if (!requireAdmin(req)) return res.json(401, { error: 'UNAUTHORIZED' });
-    const screen = db.getScreen(params.screenId);
+    const screen = await db.getScreen(params.screenId);
     if (!screen || screen.event_id !== params.id) return res.json(404, { error: 'SCREEN_NOT_FOUND' });
-    db.updateScreen(screen.id, { status: 'revoked' });
+    await db.updateScreen(screen.id, { status: 'revoked' });
     res.json(200, { ok: true });
   });
 
   router.get('/api/v1/events/:id/attendance', async (req, res, params) => {
     if (!requireAdmin(req)) return res.json(401, { error: 'UNAUTHORIZED' });
-    const rows = db.listVerificationsForEvent(params.id);
+    const rows = await db.listVerificationsForEvent(params.id);
     const verified = rows.filter((r) => r.status === 'VERIFIED').length;
     const failed = rows.filter((r) => r.status !== 'VERIFIED').length;
     res.json(200, { verified, failed, attempts: rows });

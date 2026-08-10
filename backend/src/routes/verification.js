@@ -25,12 +25,12 @@ function register(router) {
       return res.json(429, { error: 'RATE_LIMITED' });
     }
     const { event_id } = body || {};
-    const event = db.getEvent(event_id);
+    const event = await db.getEvent(event_id);
     if (!event || !event.active) return res.json(404, { error: 'EVENT_NOT_FOUND' });
 
     const id = `SESSION_${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
     const expiresAt = new Date(Date.now() + config.verificationSessionTtlSeconds * 1000).toISOString();
-    db.createSession({ id, event_id: event.id, status: 'active', created_at: new Date().toISOString(), expires_at: expiresAt });
+    await db.createSession({ id, event_id: event.id, status: 'active', created_at: new Date().toISOString(), expires_at: expiresAt });
 
     res.json(201, { session_id: id, expires_at: expiresAt });
   });
@@ -42,14 +42,14 @@ function register(router) {
     }
     const { session_id, token, user_id } = body || {};
 
-    const fail = (reason, extra = {}) => {
-      record({ eventId: extra.eventId, sessionId: session_id, screenId: extra.screenId, jti: extra.jti, userId: user_id, status: 'REJECTED', reason });
+    const fail = async (reason, extra = {}) => {
+      await record({ eventId: extra.eventId, sessionId: session_id, screenId: extra.screenId, jti: extra.jti, userId: user_id, status: 'REJECTED', reason });
       res.json(200, { verified: false, reason });
     };
 
     if (!session_id || !token) return fail('INVALID_SESSION');
 
-    const session = db.getSession(session_id);
+    const session = await db.getSession(session_id);
     if (!session) return fail('INVALID_SESSION');
     if (session.status !== 'active' || new Date(session.expires_at).getTime() < Date.now()) {
       return fail('INVALID_SESSION');
@@ -64,12 +64,12 @@ function register(router) {
       return fail('WRONG_EVENT', { eventId: payload.event_id, jti: payload.jti, screenId: payload.screen_id });
     }
 
-    const screen = db.getScreen(payload.screen_id);
+    const screen = await db.getScreen(payload.screen_id);
     if (!screen || screen.status !== 'active' || screen.event_id !== session.event_id) {
       return fail('WRONG_SCREEN', { eventId: payload.event_id, jti: payload.jti, screenId: payload.screen_id });
     }
 
-    const { conflict, verification } = record({
+    const { conflict, verification } = await record({
       eventId: payload.event_id,
       sessionId: session_id,
       screenId: payload.screen_id,
@@ -82,7 +82,7 @@ function register(router) {
       return fail('TOKEN_ALREADY_USED', { eventId: payload.event_id, jti: payload.jti, screenId: payload.screen_id });
     }
 
-    db.updateSession(session_id, { status: 'used' });
+    await db.updateSession(session_id, { status: 'used' });
 
     res.json(200, {
       verified: true,

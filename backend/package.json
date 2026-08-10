@@ -2,15 +2,25 @@
   "name": "presence-backend",
   "version": "1.0.0",
   "private": true,
-  "description": "Dynamic QR Proof-of-Presence backend. MVP runs on Node.js built-ins only (no npm install required). See README for the recommended production upgrade path (Express, Prisma/PostgreSQL, jsonwebtoken).",
+  "description": "Dynamic QR Proof-of-Presence backend. Runs on Node built-ins + pg. Local dev falls back to a JSON-file store when DATABASE_URL is unset.",
   "type": "commonjs",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
     "dev": "node src/server.js",
-    "test": "node src/tests/protocol.test.js"
+    "test": "node src/tests/protocol.test.js && node src/tests/e2e.test.js",
+    "test:unit": "node src/tests/protocol.test.js",
+    "test:e2e": "node src/tests/e2e.test.js",
+    "test:pg": "node src/tests/pg.test.js",
+    "test:e2e:pg": "TEST_PG_MEM=1 node src/tests/e2e.test.js"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "pg-mem": "^3.0.14"
   }
 }

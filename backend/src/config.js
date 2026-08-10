@@ -20,6 +20,8 @@ loadEnvFile(path.join(__dirname, '..', '.env'));
 
 const config = {
   port: parseInt(process.env.PORT || '4000', 10),
+  databaseUrl: process.env.DATABASE_URL || null,
+  databaseSsl: process.env.DATABASE_SSL ? process.env.DATABASE_SSL !== 'false' : true,
   databaseFile: process.env.DATABASE_FILE || path.join(__dirname, '..', 'data', 'presence.json'),
   jwtSecret: process.env.JWT_SECRET || 'dev-secret-change-me',
   tokenValiditySeconds: parseInt(process.env.TOKEN_VALIDITY_SECONDS || '20', 10),
