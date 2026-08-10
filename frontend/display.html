@@ -80,7 +80,7 @@ async function fetchFrames(screenId, screenKey) {
 }
 
 async function renderQR(canvasEl, text) {
-  await QRCode.toCanvas(canvasEl, text, { width: 340, margin: 1 });
+  await QRCode.toCanvas(canvasEl, text, { width: 400, margin: 1 });
 }
 
 async function playCycle(frames, frameDurationMs) {
@@ -90,15 +90,12 @@ async function playCycle(frames, frameDurationMs) {
 
   for (let i = 0; i < frames.length; i++) {
     const raw = frames[i];
-    const parsed = window.Protocol.parseFrame(raw);
     label.textContent = names[i];
 
-    if (parsed.type === 'START' || parsed.type === 'END') {
-      stage.innerHTML = `<div class="startEnd">${parsed.type}</div>`;
-    } else {
-      stage.innerHTML = `<canvas id="qrcanvas"></canvas>`;
-      await renderQR(document.getElementById('qrcanvas'), raw);
-    }
+    // Every frame is a scannable QR, including START and END — the scanner
+    // needs the START QR to begin capturing the sequence.
+    stage.innerHTML = `<canvas id="qrcanvas"></canvas>`;
+    await renderQR(document.getElementById('qrcanvas'), raw);
     await new Promise((r) => setTimeout(r, frameDurationMs));
   }
 }
