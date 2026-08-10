@@ -1,0 +1,16 @@
+{
+  "name": "presence-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dynamic QR Proof-of-Presence backend. MVP runs on Node.js built-ins only (no npm install required). See README for the recommended production upgrade path (Express, Prisma/PostgreSQL, jsonwebtoken).",
+  "type": "commonjs",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node src/server.js",
+    "test": "node src/tests/protocol.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
