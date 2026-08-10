@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Presence Display</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+<script src="config.js"></script>
+<style>
+  html,body{height:100%;margin:0;background:#0b0d12;color:#eee;font-family:system-ui,sans-serif;}
+  .wrap{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;}
+  h1{font-size:1.4rem;letter-spacing:.08em;text-transform:uppercase;opacity:.85;margin-bottom:0;}
+  .screenTag{opacity:.5;margin-top:4px;font-size:.9rem;}
+  .frameLabel{font-size:2rem;font-weight:700;margin:18px 0 8px;color:#7fd0ff;}
+  canvas{background:#fff;padding:16px;border-radius:12px;}
+  .setup{max-width:420px;margin:auto;text-align:left;}
+  .setup input{width:100%;padding:8px;margin:6px 0;box-sizing:border-box;}
+  .setup button{padding:10px 16px;margin-top:8px;cursor:pointer;}
+  .err{color:#ff8080;margin-top:10px;}
+  .startEnd{font-size:3rem;font-weight:800;color:#7fffa1;padding:60px;border:4px solid #7fffa1;border-radius:16px;}
+</style>
+</head>
+<body>
+<div class="wrap" id="app">
+  <div class="setup" id="setup">
+    <h1>Configure Display</h1>
+    <p>Enter the screen credentials (from the organizer dashboard) once. Saved in this browser only.</p>
+    <label>Screen ID</label>
+    <input id="screenId" placeholder="SCREEN_XXXXXXXX" />
+    <label>Screen Key</label>
+    <input id="screenKey" placeholder="secret screen key" />
+    <label>Event Name (display only)</label>
+    <input id="eventLabel" placeholder="NGO Cleaning Drive" />
+    <button onclick="startDisplay()">Start Display</button>
+    <div class="err" id="setupErr"></div>
+  </div>
+</div>
+
+<script src="protocol.js"></script>
+<script>
+const API = window.PRESENCE_CONFIG.API_BASE_URL;
+
+// Restore saved credentials
+const saved = JSON.parse(localStorage.getItem('presence_display') || '{}');
+if (saved.screenId) document.getElementById('screenId').value = saved.screenId;
+if (saved.screenKey) document.getElementById('screenKey').value = saved.screenKey;
+if (saved.eventLabel) document.getElementById('eventLabel').value = saved.eventLabel;
+
+async function startDisplay() {
+  const screenId = document.getElementById('screenId').value.trim();
+  const screenKey = document.getElementById('screenKey').value.trim();
+  const eventLabel = document.getElementById('eventLabel').value.trim();
+  const errEl = document.getElementById('setupErr');
+  errEl.textContent = '';
+  if (!screenId || !screenKey) { errEl.textContent = 'Screen ID and Screen Key are required.'; return; }
+  localStorage.setItem('presence_display', JSON.stringify({ screenId, screenKey, eventLabel }));
+
+  document.getElementById('app').innerHTML = `
+    <h1 id="eventLabel">${eventLabel || 'Presence Display'}</h1>
+    <div class="screenTag">${screenId}</div>
+    <div class="frameLabel" id="frameLabel">Loading…</div>
+    <div id="stage"></div>
+    <div class="err" id="runErr"></div>
+  `;
+
+  runLoop(screenId, screenKey);
+}
+
+async function fetchFrames(screenId, screenKey) {
+  const res = await fetch(`${API}/api/v1/screens/${encodeURIComponent(screenId)}/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ screen_key: screenKey }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+async function renderQR(canvasEl, text) {
+  await QRCode.toCanvas(canvasEl, text, { width: 340, margin: 1 });
+}
+
+async function playCycle(frames, frameDurationMs) {
+  const stage = document.getElementById('stage');
+  const label = document.getElementById('frameLabel');
+  const names = ['START', 'QR1', 'QR2', 'QR3', 'QR4', 'END'];
+
+  for (let i = 0; i < frames.length; i++) {
+    const raw = frames[i];
+    const parsed = window.Protocol.parseFrame(raw);
+    label.textContent = names[i];
+
+    if (parsed.type === 'START' || parsed.type === 'END') {
+      stage.innerHTML = `<div class="startEnd">${parsed.type}</div>`;
+    } else {
+      stage.innerHTML = `<canvas id="qrcanvas"></canvas>`;
+      await renderQR(document.getElementById('qrcanvas'), raw);
+    }
+    await new Promise((r) => setTimeout(r, frameDurationMs));
+  }
+}
+
+async function runLoop(screenId, screenKey) {
+  const errEl = document.getElementById('runErr');
+  while (true) {
+    try {
+      const { frames, frame_duration_ms } = await fetchFrames(screenId, screenKey);
+      errEl.textContent = '';
+      await playCycle(frames, frame_duration_ms);
+    } catch (err) {
+      errEl.textContent = 'Error: ' + err.message + ' (retrying…)';
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+}
+</script>
+</body>
+</html>

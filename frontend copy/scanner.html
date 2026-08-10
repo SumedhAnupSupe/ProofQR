@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Verify Presence</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<script src="config.js"></script>
+<style>
+  html,body{height:100%;margin:0;background:#0b0d12;color:#eee;font-family:system-ui,sans-serif;}
+  .screen{max-width:420px;margin:0 auto;padding:20px;min-height:100vh;box-sizing:border-box;display:flex;flex-direction:column;}
+  h1{font-size:1.3rem;text-align:center;}
+  input{width:100%;padding:10px;box-sizing:border-box;margin:6px 0;border-radius:8px;border:1px solid #444;background:#1a1d24;color:#eee;}
+  button{padding:12px 16px;border-radius:10px;border:0;background:#3b82f6;color:#fff;font-weight:600;font-size:1rem;cursor:pointer;}
+  button:disabled{opacity:.5;}
+  .cameraWrap{position:relative;border-radius:14px;overflow:hidden;background:#000;margin:14px 0;}
+  video{width:100%;display:block;}
+  .checklist{display:flex;flex-direction:column;gap:6px;margin-top:10px;font-family:monospace;font-size:1rem;}
+  .item{display:flex;justify-content:space-between;padding:4px 10px;border-radius:6px;background:#1a1d24;}
+  .item.done{color:#7fffa1;}
+  .result{text-align:center;padding:30px 10px;border-radius:14px;margin-top:16px;}
+  .result.ok{background:#123322;color:#7fffa1;}
+  .result.fail{background:#3a1414;color:#ff8080;}
+  .result .big{font-size:3rem;}
+  .status{text-align:center;opacity:.7;margin-top:6px;}
+  .hidden{display:none;}
+</style>
+</head>
+<body>
+<div class="screen">
+  <h1>Verify Presence</h1>
+
+  <div id="setup">
+    <label>Event ID</label>
+    <input id="eventId" placeholder="NGO_CLEANING_001" />
+    <label>Your name / ID (optional)</label>
+    <input id="userId" placeholder="optional" />
+    <button id="verifyNowBtn" onclick="verifyNow()">VERIFY NOW</button>
+    <div class="status" id="setupErr"></div>
+  </div>
+
+  <div id="scanUI" class="hidden">
+    <div class="cameraWrap">
+      <video id="video" playsinline muted></video>
+    </div>
+    <canvas id="canvas" class="hidden"></canvas>
+    <div class="status">Scanning sequence…</div>
+    <div class="checklist" id="checklist"></div>
+  </div>
+
+  <div id="resultUI" class="hidden"></div>
+</div>
+
+<script src="protocol.js"></script>
+<script src="scannerStateMachine.js"></script>
+<script>
+const API = window.PRESENCE_CONFIG.API_BASE_URL;
+const FRAME_ORDER = ['START', 'QR1', 'QR2', 'QR3', 'QR4', 'END'];
+let stream = null;
+let rafId = null;
+
+function show(id) {
+  ['setup', 'scanUI', 'resultUI'].forEach((x) => document.getElementById(x).classList.toggle('hidden', x !== id));
+}
+
+function renderChecklist(scanner) {
+  const captured = scanner.getCaptured();
+  const el = document.getElementById('checklist');
+  el.innerHTML = FRAME_ORDER.map((name) => {
+    const done = captured.has(name);
+    return `<div class="item ${done ? 'done' : ''}"><span>${name}</span><span>${done ? '✓' : '○'}</span></div>`;
+  }).join('');
+}
+
+async function verifyNow() {
+  const eventId = document.getElementById('eventId').value.trim();
+  const userId = document.getElementById('userId').value.trim();
+  const errEl = document.getElementById('setupErr');
+  errEl.textContent = '';
+  if (!eventId) { errEl.textContent = 'Event ID is required.'; return; }
+
+  document.getElementById('verifyNowBtn').disabled = true;
+  let session;
+  try {
+    const res = await fetch(`${API}/api/v1/verification/session`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event_id: eventId }),
+    });
+    session = await res.json();
+    if (!res.ok) throw new Error(session.error || 'Could not start verification session');
+  } catch (err) {
+    errEl.textContent = err.message;
+    document.getElementById('verifyNowBtn').disabled = false;
+    return;
+  }
+
+  await openCameraAndScan(session.session_id, eventId, userId);
+}
+
+async function openCameraAndScan(sessionId, eventId, userId) {
+  show('scanUI');
+  const video = document.getElementById('video');
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const scanner = window.createScanner();
+  renderChecklist(scanner);
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+  } catch (err) {
+    showResult(false, 'CAMERA_PERMISSION_DENIED', 'Camera access is required to scan the display.');
+    return;
+  }
+  video.srcObject = stream;
+  await video.play();
+
+  function tick() {
+    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const code = jsQR(imageData.data, imageData.width, imageData.height);
+      if (code && code.data) {
+        scanner.feed(code.data);
+        renderChecklist(scanner);
+        const state = scanner.getState();
+        if (state === 'COMPLETE') {
+          stopCamera();
+          submitToken(sessionId, scanner.getToken(), userId, eventId);
+          return;
+        }
+        if (state === 'REJECTED') {
+          // Sequence broke (wrong order/cycle/missing chunk) - reset and keep scanning.
+          scanner.reset();
+          renderChecklist(scanner);
+        }
+      }
+    }
+    rafId = requestAnimationFrame(tick);
+  }
+  rafId = requestAnimationFrame(tick);
+}
+
+function stopCamera() {
+  if (rafId) cancelAnimationFrame(rafId);
+  if (stream) stream.getTracks().forEach((t) => t.stop());
+  stream = null;
+}
+
+async function submitToken(sessionId, token, userId, eventId) {
+  try {
+    const res = await fetch(`${API}/api/v1/verification/verify`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId, token, user_id: userId || undefined }),
+    });
+    const body = await res.json();
+    if (body.verified) {
+      showResult(true, null, null, body);
+    } else {
+      showResult(false, body.reason, reasonMessage(body.reason));
+    }
+  } catch (err) {
+    showResult(false, 'NETWORK_ERROR', 'Could not reach the verification server.');
+  }
+}
+
+function reasonMessage(reason) {
+  const map = {
+    TOKEN_EXPIRED: 'The QR sequence expired. Please scan the display again.',
+    TOKEN_ALREADY_USED: 'This token was already used for verification.',
+    INVALID_SESSION: 'Your verification session expired. Please try again.',
+    INVALID_SIGNATURE: 'The scanned token could not be validated.',
+    WRONG_EVENT: 'This display is not for the selected event.',
+    WRONG_SCREEN: 'This display is not registered or was revoked.',
+    RATE_LIMITED: 'Too many attempts. Please wait a moment and try again.',
+  };
+  return map[reason] || 'Please scan the display again.';
+}
+
+function showResult(ok, reason, message, data) {
+  show('resultUI');
+  const el = document.getElementById('resultUI');
+  if (ok) {
+    el.innerHTML = `
+      <div class="result ok">
+        <div class="big">✓</div>
+        <h2>VERIFIED</h2>
+        <p>Presence recorded</p>
+        <p>${data.event_id}</p>
+        <p>${new Date(data.timestamp).toLocaleString()}</p>
+      </div>
+      <button style="margin-top:16px;width:100%" onclick="location.reload()">Done</button>
+    `;
+  } else {
+    el.innerHTML = `
+      <div class="result fail">
+        <div class="big">✕</div>
+        <h2>Verification Failed</h2>
+        <p>${message}</p>
+      </div>
+      <button style="margin-top:16px;width:100%" onclick="location.reload()">Try Again</button>
+    `;
+  }
+}
+</script>
+</body>
+</html>

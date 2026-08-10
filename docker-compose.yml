@@ -1,0 +1,57 @@
+# Local development / self-hosted run. Mirrors the production topology:
+#   frontend (Vercel) -> backend (Railway) -> PostgreSQL (Neon)
+#
+# Usage:
+#   docker compose up --build
+#   Backend  -> http://localhost:4000   (health: /health)
+#   Frontend -> http://localhost:8080   (display /scanner.html, /organizer.html)
+#
+# NOTE: browser camera access requires HTTPS or localhost. localhost is fine here.
+# The committed frontend/config.js points at http://localhost:4000 which matches.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: presence
+      POSTGRES_PASSWORD: presence
+      POSTGRES_DB: presence
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U presence -d presence"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://presence:presence@postgres:5432/presence
+      DATABASE_SSL: "false"
+      JWT_SECRET: change-me-compose-secret
+      ADMIN_API_KEY: change-me-admin-key
+      CORS_ORIGIN: "*"
+      TOKEN_VALIDITY_SECONDS: "20"
+      VERIFICATION_SESSION_TTL_SECONDS: "60"
+      FRAME_DURATION_MS: "500"
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - ./frontend:/usr/share/nginx/html:ro
+
+volumes:
+  pgdata:

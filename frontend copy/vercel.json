@@ -1,0 +1,6 @@
+{
+  "buildCommand": "node scripts/gen-config.js",
+  "outputDirectory": ".",
+  "cleanUrls": true,
+  "trailingSlash": false
+}

@@ -1,6 +1,6 @@
 # Dynamic QR Proof-of-Presence Verification Platform
 
-A working MVP of the protocol described in the spec:
+A production-oriented MVP of the protocol:
 
 ```
 DISPLAY:  START → QR1 → QR2 → QR3 → QR4 → END   (one signed, short-lived JWT, split into 4 chunks)
@@ -8,122 +8,191 @@ SCANNER:  captures all 6 frames in order → reconstructs JWT → sends to backe
 BACKEND:  verifies signature, expiry, event, screen, session, and replay (jti) → VERIFIED / REJECTED
 ```
 
-## What's actually implemented and tested (this is a real, runnable product, not a mockup)
+Deployment targets (see below): **Frontend → Vercel**, **Backend → Railway**, **Database → Neon PostgreSQL**. Also runs locally with `docker compose` or plain Node.
 
-- **Protocol** (`backend/src/lib/protocol.js`): versioned (`P1`) frame encode/parse, deterministic chunking/reconstruction.
-- **JWT** (`backend/src/lib/jwt.js`): standard HS256 JWT (RFC 7519/JWS), signed/verified with `event_id`, `screen_id`,
-  `session_id`, `iat`, `exp`, `jti`, `sequence`. Short expiry (`TOKEN_VALIDITY_SECONDS`, default 20s).
-- **Scanner state machine** (`backend/src/lib/scanner.js`, ported 1:1 to `frontend/scannerStateMachine.js`):
-  `WAITING → RECEIVING → COMPLETE/REJECTED`. Tolerates duplicate decodes, rejects wrong order/cycle/missing chunks.
-- **Backend REST API** (`backend/src/routes/*`): event/screen management, per-screen token issuance, verification
-  session creation, verification with full server-side validation (signature, expiry, event binding, screen binding,
-  replay via `jti`).
-- **Replay protection**: enforced at the datastore layer — at most one `VERIFIED` record may ever exist per `jti`.
-- **Frontend** (`frontend/*.html`, no build step): Display page (cycles the 6 QR frames), mobile Scanner page
-  (camera capture → live progress checklist → verify), Organizer dashboard (create events/screens, view attendance).
-- **Automated tests** (`backend/src/tests/protocol.test.js`): 16 tests covering chunking round-trip, frame parsing,
-  JWT valid/expired/tampered/malformed, scanner valid/missing-chunk/wrong-cycle/early-END/duplicate-frame sequences,
-  and replay-protection uniqueness. **All 16 pass** (`npm test` inside `backend/`).
-- **End-to-end verified manually** via curl: create event → create screen → fetch display frames → reconstruct JWT
-  from frames → create verification session → verify (✅ VERIFIED) → replay same token (✅ TOKEN_ALREADY_USED) →
-  tamper token (✅ INVALID_SIGNATURE) → attendance dashboard reflects both attempts.
+---
 
-## An important, deliberate deviation from the spec's suggested stack
+## What's implemented and tested
 
-The spec recommends Express/Fastify, PostgreSQL/Prisma, and `jsonwebtoken`. **This sandbox has no network access**,
-so `npm install` cannot reach the npm registry. Rather than hand you an unrunnable scaffold, the backend is built
-entirely on **Node.js built-ins** (`http`, `crypto`, `fs`) — zero `npm install` required, runs immediately with
-`node src/server.js`. This is not "faked" — it's a real HTTP server, a real router, a real HS256 JWT implementation
-(standard construction, not custom crypto), and a real JSON-file datastore that mirrors the target relational schema.
+- **Protocol** (`backend/src/lib/protocol.js`, mirrored in `frontend/protocol.js`): versioned (`P1`) QR frame
+  encode/parse (`P1|S|<cycle>`, `P1|D|<cycle>|<chunk>|<total>|<data>`, `P1|E|<cycle>`), deterministic 4-chunk
+  JWT splitting and reconstruction (modular, supports N chunks later).
+- **JWT** (`backend/src/lib/jwt.js`): standard HS256 JWT (RFC 7519/JWS) via Node `crypto`. Claims: `iss`, `aud`,
+  `event_id`, `screen_id`, `session_id`, `iat`, `exp`, `jti` (random UUID), `sequence` (cycle). Short expiry
+  (`TOKEN_VALIDITY_SECONDS`, default 20 s). Signing mechanism is isolated in one module — swap to EdDSA/Ed25519
+  (e.g. `jsonwebtoken`) without touching anything else.
+- **Scanner state machine** (`backend/src/lib/scanner.js`, mirrored in `frontend/scannerStateMachine.js`):
+  `WAITING → RECEIVING → COMPLETE | REJECTED`. Tolerates duplicate decodes, rejects wrong cycle / conflicting
+  chunks / early END / missing chunks. Chunk index is authoritative (not scan order), so out-of-order physical
+  capture still reconstructs correctly.
+- **Backend REST API** (`backend/src/routes/*`): events, screens (with one-time `screen_key`), per-screen token
+  issuance, verification sessions, verification with full server-side validation.
+- **Datastore** (`backend/src/db/`): async facade with two interchangeable implementations —
+  - `pg.js` → **PostgreSQL** (Neon/Railway/docker-compose), selected when `DATABASE_URL` is set. Schema is created
+    automatically on boot (idempotent). Replay protection is a **hard unique partial index**:
+    `UNIQUE INDEX ... ON verifications(jti) WHERE status = 'VERIFIED'`.
+  - `file.js` → JSON-file store for zero-dependency local dev / tests, selected when `DATABASE_URL` is unset.
+- **Replay protection**: enforced twice — application check + the database constraint above. A second `VERIFIED`
+  for the same `jti` is impossible by construction.
+- **Frontend** (`frontend/`, static, no build step): Display page (cycles the 6 frames on a screen/TV), mobile
+  Scanner page (camera → live progress checklist → verify), Organizer dashboard (events/screens/attendance).
+- **Tests** (all green):
+  - `npm run test:unit` — protocol/JWT/scanner/replay: **16 tests**
+  - `npm run test:e2e` — full HTTP flow on the file store: **14 tests**
+  - `npm run test:pg` — PostgreSQL store via pg-mem: **8 tests**
+  - `npm run test:e2e:pg` — full HTTP flow on the PostgreSQL store (pg-mem): **14 tests**
 
-**Production upgrade path** (straightforward, isolated swaps, no redesign needed):
-1. `backend/src/db/index.js` → replace with Prisma + PostgreSQL, using the exact same schema shape (events, screens,
-   verification_sessions, verifications) and the same function signatures (`createEvent`, `insertVerification`, etc.).
-2. `backend/src/lib/jwt.js` → replace with the `jsonwebtoken` package and/or EdDSA/Ed25519 signing.
-3. `backend/src/server.js` + `lib/router.js` → replace with Express/Fastify if you want middleware ecosystem access
-   (helmet, real CORS package, etc.) — the route handler signatures (`(req, res, params, body)`) are trivial to adapt.
-4. Add Redis for distributed rate-limiting/session state once you run more than one backend instance.
+The e2e suite exercises: create event → create screen → display fetches 6 frames → scanner reconstructs JWT →
+create session → verify ✅ → replay ✅ `TOKEN_ALREADY_USED` → tamper ✅ `INVALID_SIGNATURE` → wrong event
+✅ `WRONG_EVENT` → revoked screen ✅ `WRONG_SCREEN` → expired session ✅ `INVALID_SESSION` → attendance reflects
+attempts → unauthenticated admin ✅ `401`.
 
-Everything else (protocol design, JWT claims, verification logic, threat model, scanner state machine, frontend) is
-exactly as specified and is what actually gets tested.
+---
 
 ## Project structure
 
 ```
 presence-platform/
+├── apps/frontend → frontend/                    (static, deployed to Vercel)
 ├── backend/
 │   ├── src/
-│   │   ├── config.js          # centralized config (env-driven)
-│   │   ├── server.js          # HTTP server + router wiring
+│   │   ├── config.js            # centralized, env-driven config
+│   │   ├── server.js            # HTTP server + router (exported for tests)
+│   │   ├── db/
+│   │   │   ├── index.js         # facade: DATABASE_URL ? pg : file
+│   │   │   ├── pg.js            # PostgreSQL store (Neon) + schema/migration
+│   │   │   └── file.js          # JSON-file store (local dev / tests)
 │   │   ├── lib/
-│   │   │   ├── protocol.js    # QR frame encode/parse + chunking
-│   │   │   ├── jwt.js         # HS256 JWT sign/verify
-│   │   │   ├── scanner.js     # scanner state machine (server-side test copy)
-│   │   │   ├── router.js      # tiny dependency-free HTTP router
-│   │   │   └── rateLimit.js   # in-memory rate limiter
-│   │   ├── db/index.js        # JSON-file datastore (Prisma/Postgres-shaped)
-│   │   ├── routes/            # events.js, screens.js, verification.js
-│   │   └── tests/protocol.test.js
+│   │   │   ├── protocol.js      # QR frame encode/parse + chunking
+│   │   │   ├── jwt.js           # HS256 sign/verify
+│   │   │   ├── scanner.js       # scanner state machine
+│   │   │   ├── router.js        # tiny dependency-free HTTP router
+│   │   │   └── rateLimit.js     # in-memory rate limiter
+│   │   ├── routes/              # events.js, screens.js, verification.js
+│   │   └── tests/               # protocol.test.js, e2e.test.js, pg.test.js
+│   ├── Dockerfile, railway.json
 │   ├── package.json
 │   └── .env.example
 ├── frontend/
-│   ├── config.js               # API_BASE_URL - edit this
-│   ├── display.html            # the physical screen client
-│   ├── scanner.html            # mobile "Verify Now" scanner
-│   ├── organizer.html          # organizer/admin dashboard
-│   ├── protocol.js             # browser port of protocol.js
-│   └── scannerStateMachine.js  # browser port of scanner.js
+│   ├── config.js                # API_BASE_URL (generated on Vercel)
+│   ├── index.html, display.html, scanner.html, organizer.html
+│   ├── protocol.js, scannerStateMachine.js
+│   ├── vercel.json              # Vercel build/output config
+│   └── scripts/gen-config.js    # Vercel build step (injects PRESENCE_API_BASE_URL)
+├── docker-compose.yml
+├── .env.example → see backend/.env.example
 └── README.md
 ```
 
-## Running locally
+---
 
-### Backend
+## Running locally (plain Node, no database)
+
 ```bash
 cd backend
-cp .env.example .env   # edit JWT_SECRET and ADMIN_API_KEY for anything beyond local testing
-node src/server.js
-# -> Presence backend listening on :4000
+cp .env.example .env          # leave DATABASE_URL commented out -> JSON-file store
+npm install
+npm run dev                   # -> :4000  (health: http://localhost:4000/health)
 ```
 
-### Tests
 ```bash
-cd backend
-npm test
-# -> 16 passed, 0 failed
-```
-
-### Frontend
-No build step. Just open the HTML files in a browser (or serve the `frontend/` folder with any static file server —
-camera access requires HTTPS or `localhost` in real browsers).
-
-```bash
+# frontend (no build step; camera works on localhost)
 cd frontend
 python3 -m http.server 5173
+# -> http://localhost:5173
 ```
 
-Edit `frontend/config.js` if your backend isn't on `http://localhost:4000`.
+**Flow:** open `/organizer.html` → enter the admin key (`ADMIN_API_KEY`) → create an event → create a screen
+(one-time `screen_key`) → open `/display.html`, paste screen ID/key → open `/scanner.html` on a phone, enter the
+Event ID → **VERIFY NOW** → point the camera at the display → checklist fills → VERIFIED.
 
-**Flow:**
-1. Open `organizer.html` → enter the admin key (`ADMIN_API_KEY` from `.env`) → create an event → create a screen.
-   Copy the `screen_id` / `screen_key` shown once.
-2. Open `display.html` on the screen/TV → paste in the screen ID/key → it starts cycling START → QR1‑4 → END.
-3. Open `scanner.html` on a phone → enter the Event ID → **VERIFY NOW** → point camera at the display → watch the
-   checklist fill in → VERIFIED.
+## Running locally with Docker Compose (PostgreSQL)
+
+```bash
+docker compose up --build
+# backend  -> http://localhost:4000
+# frontend -> http://localhost:8080  (/display, /scanner, /organizer)
+```
+
+This starts `postgres` + `backend` (built from `backend/Dockerfile`) + `frontend` (nginx static). The backend uses
+`DATABASE_URL` → PostgreSQL, and creates the schema automatically on boot.
+
+## Tests
+
+```bash
+cd backend
+npm test                  # unit + e2e (file store)
+npm run test:pg           # PostgreSQL store logic (pg-mem, no server needed)
+npm run test:e2e:pg       # full HTTP flow against PostgreSQL store (pg-mem)
+```
+
+## Deployment
+
+### 1. Database → Neon
+
+1. Create a project at neon.tech and copy the pooled connection string (starts with `postgres://`).
+2. No manual schema step needed — the backend creates tables/indexes on first boot.
+
+### 2. Backend → Railway
+
+1. Deploy the `backend/` folder as a new Railway service (or `railway up`). Railway auto-uses the **Dockerfile**
+   (see `railway.json`); healthcheck hits `/health`.
+2. Set environment variables:
+   | Variable | Value |
+   |---|---|
+   | `DATABASE_URL` | your Neon connection string |
+   | `DATABASE_SSL` | `true` (Neon requires SSL) |
+   | `JWT_SECRET` | long random string |
+   | `ADMIN_API_KEY` | long random string |
+   | `CORS_ORIGIN` | your Vercel origin (e.g. `https://your-app.vercel.app`) or `*` |
+   | `TOKEN_VALIDITY_SECONDS` | `20` (configurable) |
+   | `VERIFICATION_SESSION_TTL_SECONDS` | `60` |
+   | `FRAME_DURATION_MS` | `500` |
+3. Copy the service's public URL (e.g. `https://your-backend.up.railway.app`).
+
+> Railway sets `PORT` automatically; the app listens on it.
+
+### 3. Frontend → Vercel
+
+1. Import the repo. Set **Root Directory** to `frontend`.
+2. `vercel.json` already defines the build command (`node scripts/gen-config.js`) and output directory (`.`).
+3. Set the project environment variable `PRESENCE_API_BASE_URL` to your Railway backend URL
+   (e.g. `https://your-backend.up.railway.app`). This is injected into `frontend/config.js` at build time.
+4. Deploy. The landing page links to `/organizer`, `/display`, `/scanner`.
+
+> Camera access requires HTTPS — Vercel provides it automatically.
+
+## Environment variables (backend)
+
+See `backend/.env.example`:
+
+```env
+PORT=4000
+DATABASE_URL=            # unset -> JSON-file store; set -> PostgreSQL
+DATABASE_SSL=true        # false for local docker-compose
+DATABASE_FILE=./data/presence.json
+JWT_SECRET=change-me
+TOKEN_VALIDITY_SECONDS=20
+VERIFICATION_SESSION_TTL_SECONDS=60
+FRAME_DURATION_MS=500
+CORS_ORIGIN=*
+ADMIN_API_KEY=change-me
+```
 
 ## API
 
 ```
 POST /api/v1/events                              (admin) create event
 GET  /api/v1/events/:id                                   read event
-POST /api/v1/events/:id/screens                   (admin) create screen -> {id, screen_key}
-GET  /api/v1/events/:id/screens                   (admin) list screens
+POST /api/v1/events/:id/screens                   (admin) create screen -> {id, screen_key} (one-time)
+GET  /api/v1/events/:id/screens                   (admin) list screens (screen_key redacted)
 POST /api/v1/events/:id/screens/:screenId/revoke  (admin) revoke a screen
 GET  /api/v1/events/:id/attendance                (admin) verified/failed counts + attempts
 
 POST /api/v1/screens/:id/token       {screen_key}                     -> {cycle, frames[6], frame_duration_ms}
 POST /api/v1/verification/session    {event_id}                       -> {session_id, expires_at}
 POST /api/v1/verification/verify     {session_id, token, user_id?}    -> {verified, ...}
+GET  /health                                                            -> {ok:true, engine}
 ```
 
 Failure reasons: `INVALID_SESSION`, `INVALID_SIGNATURE`, `TOKEN_EXPIRED`, `TOKEN_NOT_YET_VALID`, `WRONG_EVENT`,
@@ -133,51 +202,43 @@ Failure reasons: `INVALID_SESSION`, `INVALID_SIGNATURE`, `TOKEN_EXPIRED`, `TOKEN
 
 - Server never trusts client-declared `event_id`, `screen_id`, or timestamps — every claim in the JWT is
   independently re-validated against the verification session and the screens table.
-- Screens authenticate with a server-issued `screen_key` (never exposed to the scanner/browser at large).
-- Replay protection is a **hard uniqueness constraint** on `jti` for `VERIFIED` rows, not just an application check.
-- JWT secret lives only in backend env (`JWT_SECRET`), never sent to any frontend.
-- Rate limiting on `/verification/session` and `/verification/verify` (30 req/min/IP by default).
+- Screens authenticate with a server-issued `screen_key` (never exposed to the scanner/browser).
+- Replay protection is a **hard database constraint** (unique partial index on `VERIFIED.jti`), not just an
+  application check — applies to all app instances sharing the same PostgreSQL.
+- JWT secret lives only in backend env; never sent to any frontend.
+- Rate limiting on `/verification/session` and `/verification/verify` (30 req/min/IP, configurable). In-memory —
+  swap to Redis if you run multiple backend instances.
 - Logs never contain the JWT or secret material — only `event`, `reason`, `screen`.
+- The JWT-signing module is isolated so HS256 can be replaced with EdDSA/Ed25519 without touching business logic.
 
-## Threat model (see spec §31 — all implemented and covered by the manual/automated test suite)
+## Threat model (all covered by the automated tests)
 
 | Attack | Result |
 |---|---|
 | Static screenshot replayed later | `TOKEN_EXPIRED` |
 | Old recorded sequence | `TOKEN_EXPIRED` |
 | Partial sequence (e.g. only QR1+QR2) | Scanner never reaches `COMPLETE`; nothing submitted |
-| Wrong frame order | Scanner reconstructs correctly if all chunks present regardless of arrival order (chunk index is authoritative, not scan order) — but wrong `cycle` mid-sequence is rejected |
+| Wrong frame order | Reconstructed correctly if all chunks present (chunk index is authoritative) — wrong `cycle` mid-sequence is rejected |
 | Duplicate submission of same JWT | First `VERIFIED`, second `TOKEN_ALREADY_USED` (tested) |
 | Tampered JWT (modified event/screen/exp) | `INVALID_SIGNATURE` (tested) |
-| Token from a different event | `WRONG_EVENT` |
-| Token from a revoked/foreign screen | `WRONG_SCREEN` |
+| Token from a different event | `WRONG_EVENT` (tested) |
+| Token from a revoked/foreign screen | `WRONG_SCREEN` (tested) |
+| Expired verification session | `INVALID_SESSION` (tested) |
 
-### Explicit limitation (spec §32)
+### Explicit limitation
 
 This system does **not** mathematically guarantee physical presence. A determined attacker could relay the live
 video feed to a remote device in real time. The correct claim is: *dynamic cryptographic proof-of-presence
 verification designed to make static QR sharing and simple replay significantly harder* — not an unbreakable
 guarantee.
 
-## Phase status vs. spec §37
+## Notes / honest limitations
 
-| Phase | Status |
-|---|---|
-| 1 — Protocol prototype (chunk/reconstruct, frame parse) | ✅ done, tested |
-| 2 — JWT verification (valid/expired/tampered) | ✅ done, tested |
-| 3 — Backend verification API | ✅ done, tested end-to-end via curl |
-| 4 — Persistence (events/screens/sessions/verifications) | ✅ done (JSON-file MVP store; Postgres/Prisma is the documented swap) |
-| 5 — Replay protection | ✅ done, tested |
-| 6 — Organizer dashboard | ✅ done (`organizer.html`) |
-| 7 — Production-quality scanner polish (low-light, focus tuning, etc.) | ⚠️ basic version done; needs real-device tuning — can't be verified in this sandbox (no camera/browser) |
-| 8 — SDK (`Presence.verify()` embeddable widget) | ⏳ not built — the scanner page's logic (`verifyNow()` in `scanner.html`) is the code to extract into an SDK; straightforward next step |
-
-## What has **not** been verified (honest limitations)
-
-- No browser was available in this environment, so `display.html` / `scanner.html` / `organizer.html` were written
-  correctly against the tested backend API and manually reviewed, but **not executed in an actual browser** here.
-  Test them in yours before relying on them.
-- Docker Compose / cloud deployment (Vercel/Railway/Neon) is described above but no Dockerfiles were generated —
-  ask if you'd like those next.
-- The `sequence`-monotonicity check across cycles (detecting a display's cycle counter going backwards) isn't
-  separately enforced beyond the JWT's own `exp`; add if you need it.
+- The PostgreSQL store is exercised against **pg-mem** (in-memory Postgres emulation) in CI, which validates the
+  SQL, CRUD, and the unique-partial-index replay protection. A real Neon connection uses the exact same store
+  (`pg.js`); verify against a live Neon DB before a big event.
+- `display.html` / `scanner.html` / `organizer.html` were tested against the backend API manually and by review;
+  test the camera flow on real devices (low-light/focus tuning may be needed).
+- Rate limiting is per-process (in-memory). For multiple Railway instances, add Redis for shared limiting.
+- The `sequence`-monotonicity check across cycles isn't separately enforced beyond the JWT's own `exp`; the JWT
+  `exp` (≤20 s) already bounds a stale display. Add if you need per-screen strict ordering.
