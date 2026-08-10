@@ -41,7 +41,7 @@
 
   <div id="scanUI" class="hidden">
     <div class="cameraWrap">
-      <video id="video" playsinline muted></video>
+      <video id="video" autoplay playsinline muted></video>
     </div>
     <canvas id="canvas" class="hidden"></canvas>
     <div class="status">Scanning sequence…</div>
@@ -56,6 +56,7 @@
 <script>
 const API = window.PRESENCE_CONFIG.API_BASE_URL;
 const FRAME_ORDER = ['START', 'QR1', 'QR2', 'QR3', 'QR4', 'END'];
+const SCAN_MAX_DIM = 640; // downscale camera frames so jsQR stays fast on phones
 let stream = null;
 let rafId = null;
 
@@ -80,6 +81,29 @@ async function verifyNow() {
   if (!eventId) { errEl.textContent = 'Event ID is required.'; return; }
 
   document.getElementById('verifyNowBtn').disabled = true;
+  show('scanUI');
+
+  // 1) Request the camera FIRST, still inside the user gesture. On iOS this
+  //    prompt and play() must not be deferred behind a network await, or the
+  //    camera will never start.
+  const video = document.getElementById('video');
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+    });
+  } catch (err) {
+    stream = null;
+    document.getElementById('verifyNowBtn').disabled = false;
+    show('setup');
+    errEl.textContent = 'Camera access is required to scan. Allow camera permission and try again.';
+    return;
+  }
+  video.srcObject = stream;
+  try { await video.play(); } catch (err) { /* some browsers play the stream without an explicit call */ }
+
+  // 2) Now start the verification session (token is valid for 20s; the display
+  //    cycles the same frames within that window, so any missed frame is
+  //    re-scanned on the next pass).
   let session;
   try {
     const res = await fetch(`${API}/api/v1/verification/session`, {
@@ -89,40 +113,52 @@ async function verifyNow() {
     session = await res.json();
     if (!res.ok) throw new Error(session.error || 'Could not start verification session');
   } catch (err) {
-    errEl.textContent = err.message;
-    document.getElementById('verifyNowBtn').disabled = false;
+    stopCamera();
+    showResult(false, 'SESSION_ERROR', err.message);
     return;
   }
 
-  await openCameraAndScan(session.session_id, eventId, userId);
-}
+  // 3) Prefer the native BarcodeDetector (fast at full resolution, available on
+  //    modern Chrome/Android/Safari) and fall back to jsQR on a downscaled frame.
+  let detector = null;
+  try {
+    if ('BarcodeDetector' in window) {
+      const formats = await BarcodeDetector.getSupportedFormats();
+      if (formats.includes('qr_code')) detector = new BarcodeDetector({ formats: ['qr_code'] });
+    }
+  } catch (err) { detector = null; }
 
-async function openCameraAndScan(sessionId, eventId, userId) {
-  show('scanUI');
-  const video = document.getElementById('video');
-  const canvas = document.getElementById('canvas');
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
   const scanner = window.createScanner();
   renderChecklist(scanner);
+  scanLoop(video, scanner, detector, session.session_id, eventId, userId);
+}
 
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-  } catch (err) {
-    showResult(false, 'CAMERA_PERMISSION_DENIED', 'Camera access is required to scan the display.');
-    return;
-  }
-  video.srcObject = stream;
-  await video.play();
+function scanLoop(video, scanner, detector, sessionId, eventId, userId) {
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-  function tick() {
-    if (video.readyState === video.HAVE_ENOUGH_DATA) {
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+  async function step() {
+    if (stream && video.readyState >= video.HAVE_ENOUGH_DATA && video.videoWidth > 0) {
+      const scale = Math.min(1, SCAN_MAX_DIM / Math.max(video.videoWidth, video.videoHeight));
+      canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+      canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const code = jsQR(imageData.data, imageData.width, imageData.height);
-      if (code && code.data) {
-        scanner.feed(code.data);
+
+      let raw = null;
+      if (detector) {
+        try {
+          const codes = await detector.detect(canvas);
+          if (codes && codes.length) raw = codes[0].rawValue;
+        } catch (err) { /* fall through to jsQR */ }
+      }
+      if (raw == null) {
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const code = jsQR(imageData.data, imageData.width, imageData.height);
+        if (code && code.data) raw = code.data;
+      }
+
+      if (raw) {
+        scanner.feed(raw);
         renderChecklist(scanner);
         const state = scanner.getState();
         if (state === 'COMPLETE') {
@@ -137,9 +173,9 @@ async function openCameraAndScan(sessionId, eventId, userId) {
         }
       }
     }
-    rafId = requestAnimationFrame(tick);
+    if (stream) rafId = requestAnimationFrame(step);
   }
-  rafId = requestAnimationFrame(tick);
+  rafId = requestAnimationFrame(step);
 }
 
 function stopCamera() {
