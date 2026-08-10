@@ -34,9 +34,11 @@
 
   <div class="card">
     <h3>Create Event</h3>
-    <input id="eventName" placeholder="Event name, e.g. NGO Cleaning Drive" style="width:300px" />
+    <input id="eventName" placeholder="Event name, e.g. NGO Cleaning Drive" style="width:300px" /><br/>
+    <input id="eventId" placeholder="Event ID (optional — auto-generated if blank, e.g. NGO_CLEANING_001)" style="width:300px;margin-top:6px" />
     <button onclick="createEvent()">Create Event</button>
     <div id="createEventErr" class="muted"></div>
+    <div id="createEventOk" class="muted" style="color:#7fffa1"></div>
   </div>
 
   <div class="card">
@@ -87,11 +89,18 @@ async function api(path, opts = {}) {
 
 async function createEvent() {
   const name = document.getElementById('eventName').value.trim();
+  const customId = document.getElementById('eventId').value.trim();
   const errEl = document.getElementById('createEventErr');
+  const okEl = document.getElementById('createEventOk');
   errEl.textContent = '';
+  okEl.textContent = '';
   if (!name) { errEl.textContent = 'Name required'; return; }
   try {
-    const event = await api('/api/v1/events', { method: 'POST', body: JSON.stringify({ name }) });
+    const event = await api('/api/v1/events', {
+      method: 'POST',
+      body: JSON.stringify({ name, id: customId || undefined }),
+    });
+    okEl.textContent = `Event created — ID: ${event.id}`;
     document.getElementById('loadEventId').value = event.id;
     await loadEvent();
   } catch (err) {
