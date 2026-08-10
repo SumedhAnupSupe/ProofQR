@@ -77,8 +77,8 @@ presence-platform/
 │   ├── config.js                # API_BASE_URL (generated on Vercel)
 │   ├── index.html, display.html, scanner.html, organizer.html
 │   ├── protocol.js, scannerStateMachine.js
-│   ├── vercel.json              # Vercel build/output config
 │   └── scripts/gen-config.js    # Vercel build step (injects PRESENCE_API_BASE_URL)
+├── vercel.json                  # Vercel build/output config (repo root)
 ├── docker-compose.yml
 ├── .env.example → see backend/.env.example
 └── README.md
@@ -154,11 +154,16 @@ npm run test:e2e:pg       # full HTTP flow against PostgreSQL store (pg-mem)
 
 ### 3. Frontend → Vercel
 
-1. Import the repo. Set **Root Directory** to `frontend`.
-2. `vercel.json` already defines the build command (`node scripts/gen-config.js`) and output directory (`.`).
-3. Set the project environment variable `PRESENCE_API_BASE_URL` to your Railway backend URL
+1. Import the repo. **Root Directory** must be the **repo root** (remove/leave blank the `frontend/` value) — the
+   root `vercel.json` configures the build. Vercel discovers `vercel.json` at the repo root, not inside a
+   subdirectory.
+2. The root `vercel.json` sets: build command (`node frontend/scripts/gen-config.js`), output directory
+   (`frontend`), and `cleanUrls` (so `/organizer` works instead of `/organizer.html`).
+3. Make sure **Build Command** and **Output Directory** in the Vercel dashboard (Settings → General) are left as
+   defaults (empty), otherwise dashboard values override `vercel.json`.
+4. Set the project environment variable `PRESENCE_API_BASE_URL` to your Railway backend URL
    (e.g. `https://your-backend.up.railway.app`). This is injected into `frontend/config.js` at build time.
-4. Deploy. The landing page links to `/organizer`, `/display`, `/scanner`.
+5. Deploy. The landing page links to `/organizer`, `/display`, `/scanner`.
 
 > Camera access requires HTTPS — Vercel provides it automatically.
 

@@ -1,0 +1,6 @@
+{
+  "buildCommand": "node frontend/scripts/gen-config.js",
+  "outputDirectory": "frontend",
+  "cleanUrls": true,
+  "trailingSlash": false
+}
