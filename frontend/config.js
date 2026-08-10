@@ -5,5 +5,5 @@
 // vercel.json at the repo root). For plain local development, edit this value
 // directly.
 window.PRESENCE_CONFIG = {
-  API_BASE_URL: 'http://localhost:4000',
+  API_BASE_URL: 'http://localhost:8080',
 };

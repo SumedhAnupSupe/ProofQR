@@ -36,7 +36,7 @@
     <h3>Create Event</h3>
     <input id="eventName" placeholder="Event name, e.g. NGO Cleaning Drive" style="width:300px" /><br/>
     <input id="eventId" placeholder="Event ID (optional — auto-generated if blank, e.g. NGO_CLEANING_001)" style="width:300px;margin-top:6px" />
-    <button onclick="createEvent()">Create Event</button>
+    <button onclick="createNewEvent()">Create Event</button>
     <div id="createEventErr" class="muted"></div>
     <div id="createEventOk" class="muted" style="color:#7fffa1"></div>
   </div>
@@ -87,7 +87,9 @@ async function api(path, opts = {}) {
   return body;
 }
 
-async function createEvent() {
+// Named createNewEvent (NOT createEvent) — "createEvent" collides with the
+// browser's document.createEvent() in inline onclick scope chains.
+async function createNewEvent() {
   const name = document.getElementById('eventName').value.trim();
   const customId = document.getElementById('eventId').value.trim();
   const errEl = document.getElementById('createEventErr');

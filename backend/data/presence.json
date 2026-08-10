@@ -1,0 +1,14 @@
+{
+  "events": {
+    "PROBE_4BB8": {
+      "id": "PROBE_4BB8",
+      "name": "Probe",
+      "token_validity": 20,
+      "active": true,
+      "created_at": "2026-08-10T03:48:11.845Z"
+    }
+  },
+  "screens": {},
+  "verification_sessions": {},
+  "verifications": {}
+}
